@@ -304,4 +304,17 @@ mod tests {
         let complete_groups = result.iter().filter(|g| g.is_full()).count();
         assert_eq!(complete_groups, 1);
     }
+
+    #[test]
+    fn test_atomic_flag_behavior() {
+        // Test that the atomic flag works correctly
+        let running = Arc::new(AtomicBool::new(true));
+        assert!(running.load(Ordering::SeqCst));
+        
+        running.store(false, Ordering::SeqCst);
+        assert!(!running.load(Ordering::SeqCst));
+        
+        running.store(true, Ordering::SeqCst);
+        assert!(running.load(Ordering::SeqCst));
+    }
 }
