@@ -230,7 +230,7 @@ fn main() {
 
     // Set up Ctrl+C handler
     ctrlc::set_handler(move || {
-        println!("\n\nCtrl+C が押されました。プログラムを終了します...");
+        println!("\n\nCtrl+C が押されました。プログラムを終了します...グループ分けの結果を表示するには、Enterを押してください。");
         r.store(false, Ordering::SeqCst);
     })
     .expect("Error setting Ctrl-C handler");
