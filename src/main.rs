@@ -229,12 +229,24 @@ fn reorganize_incomplete_groups(groups: Vec<Group>) -> Vec<Group> {
     let n = incomplete_members.len();
     
     // NEW REQUIREMENT: Never create single-person groups
+    // UPDATED: Prefer groups of 2-3 people, not 4
     if n == 1 {
         // If we have exactly 1 incomplete member and at least one complete group,
-        // add this member to the last complete group
+        // we should avoid creating a 4-person group
         if !final_groups.is_empty() {
             if let Some(last_group) = final_groups.last_mut() {
-                last_group.members.push(incomplete_members.into_iter().next().unwrap());
+                // Take 1 member from the last complete group and pair with the singleton
+                // to create two 2-person groups instead of one 4-person group
+                if last_group.members.len() == 3 {
+                    let member_from_last = last_group.members.pop().unwrap();
+                    let mut new_group = Group::new();
+                    new_group.members.push(member_from_last);
+                    new_group.members.push(incomplete_members.into_iter().next().unwrap());
+                    final_groups.push(new_group);
+                } else {
+                    // If the last group doesn't have 3 members, just add to it
+                    last_group.members.push(incomplete_members.into_iter().next().unwrap());
+                }
             }
         } else {
             // If we have no complete groups and only 1 member total, we cannot form valid groups
@@ -537,9 +549,10 @@ mod tests {
         let groups = vec![complete_group, single_group];
         let result = reorganize_incomplete_groups(groups);
 
-        // Should merge the single student into the complete group
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].members.len(), 4);
+        // Should create two 2-person groups instead of one 4-person group
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].members.len(), 2);
+        assert_eq!(result[1].members.len(), 2);
     }
 
     #[test]
