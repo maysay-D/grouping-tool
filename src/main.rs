@@ -1,7 +1,29 @@
 use rand::seq::SliceRandom;
-use std::io::{self, BufRead};
+use std::fs::File;
+use std::io::{self, BufRead, BufReader};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 type StudentId = String;
+
+// Convert a group index (0-based) to a letter (A, B, C, ...)
+fn group_index_to_letter(index: usize) -> String {
+    let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    if index < alphabet.len() {
+        alphabet.chars().nth(index).unwrap().to_string()
+    } else {
+        // For indices beyond Z, use AA, AB, AC, etc.
+        let first = (index / 26) - 1;
+        let second = index % 26;
+        format!(
+            "{}{}",
+            alphabet.chars().nth(first).unwrap(),
+            alphabet.chars().nth(second).unwrap()
+        )
+    }
+}
 
 #[derive(Debug, Clone)]
 struct Group {
@@ -26,31 +48,123 @@ impl Group {
     }
 }
 
-fn read_student_ids() -> Vec<Group> {
-    let stdin = io::stdin();
+fn read_student_ids(running: Arc<AtomicBool>) -> Vec<Group> {
     let mut groups = Vec::new();
     let mut current_group = Group::new();
 
-    println!("学籍番号を入力してください (3人ごとにグループになります。EOFで終了: Ctrl+D (Unix/Mac) または Ctrl+Z (Windows)):");
+    println!("学籍番号を入力してください (3人ごとにグループになります):");
+    println!("  - Ctrl+D (Unix/Mac) または Ctrl+Z+Enter (Windows): 現在のグループを終了して次のグループへ");
+    println!("  - Ctrl+C: プログラムを終了");
+    println!();
 
-    for line in stdin.lock().lines() {
-        match line {
-            Ok(student_id) => {
-                let student_id = student_id.trim().to_string();
-                if !student_id.is_empty() {
-                    current_group.add_member(student_id);
+    let mut group_index = 0;
+    println!(
+        "=== グループ {} の入力 ===",
+        group_index_to_letter(group_index)
+    );
 
-                    if current_group.is_full() {
-                        groups.push(current_group);
-                        current_group = Group::new();
+    // Check if stdin is a TTY (interactive terminal)
+    let is_tty = if cfg!(unix) {
+        use std::os::unix::io::AsRawFd;
+        unsafe { libc::isatty(io::stdin().as_raw_fd()) == 1 }
+    } else {
+        // On Windows, assume interactive for now
+        true
+    };
+
+    loop {
+        // Check if Ctrl+C was pressed
+        if !running.load(Ordering::SeqCst) {
+            // Save current group if it has members before exiting
+            if !current_group.members.is_empty() {
+                groups.push(current_group.clone());
+            }
+            break;
+        }
+
+        // Read input - use /dev/tty only in interactive mode on Unix
+        let reader: Box<dyn BufRead> = if is_tty && cfg!(unix) {
+            File::open("/dev/tty")
+                .map(|f| Box::new(BufReader::new(f)) as Box<dyn BufRead>)
+                .unwrap_or_else(|_| Box::new(BufReader::new(io::stdin())))
+        } else {
+            Box::new(BufReader::new(io::stdin()))
+        };
+
+        let mut eof_encountered = false;
+        for line in reader.lines() {
+            // Check if Ctrl+C was pressed
+            if !running.load(Ordering::SeqCst) {
+                if !current_group.members.is_empty() {
+                    groups.push(current_group.clone());
+                }
+                return groups;
+            }
+
+            match line {
+                Ok(student_id) => {
+                    let student_id = student_id.trim().to_string();
+                    if !student_id.is_empty() {
+                        current_group.add_member(student_id.clone());
+                        println!("  追加: {}", student_id);
+
+                        if current_group.is_full() {
+                            println!(
+                                "  ✓ グループ {} が完成しました (3人)",
+                                group_index_to_letter(group_index)
+                            );
+                            groups.push(current_group.clone());
+                            current_group = Group::new();
+                            group_index += 1;
+                            println!(
+                                "\n=== グループ {} の入力 ===",
+                                group_index_to_letter(group_index)
+                            );
+                        }
                     }
                 }
+                Err(_) => {
+                    eof_encountered = true;
+                    break;
+                }
             }
-            Err(_) => break,
+        }
+
+        // EOF was encountered
+        if !eof_encountered {
+            // lines iterator ended naturally (EOF)
+            eof_encountered = true;
+        }
+
+        if eof_encountered {
+            // Save current group if it has members
+            if !current_group.members.is_empty() {
+                println!(
+                    "  ✓ グループ {} を保存しました ({} 人)",
+                    group_index_to_letter(group_index),
+                    current_group.members.len()
+                );
+                groups.push(current_group.clone());
+                current_group = Group::new();
+                group_index += 1;
+
+                // Only continue for multiple groups if we're in interactive TTY mode with /dev/tty
+                if is_tty && cfg!(unix) && File::open("/dev/tty").is_ok() {
+                    println!(
+                        "\n=== グループ {} の入力 ===",
+                        group_index_to_letter(group_index)
+                    );
+                    // Continue loop to read next group
+                    continue;
+                }
+            }
+
+            // Exit the loop if not in interactive mode
+            break;
         }
     }
 
-    // Save the current group if it has any members (requirement 2)
+    // Save the current group if it has any members
     if !current_group.members.is_empty() {
         groups.push(current_group);
     }
@@ -98,7 +212,11 @@ fn reorganize_incomplete_groups(groups: Vec<Group>) -> Vec<Group> {
 fn print_groups(groups: &[Group]) {
     println!("\n=== グループ分け結果 ===");
     for (i, group) in groups.iter().enumerate() {
-        println!("グループ {}: {} 人", i + 1, group.members.len());
+        println!(
+            "グループ {}: {} 人",
+            group_index_to_letter(i),
+            group.members.len()
+        );
         for member in &group.members {
             println!("  - {}", member);
         }
@@ -107,7 +225,23 @@ fn print_groups(groups: &[Group]) {
 }
 
 fn main() {
-    let groups = read_student_ids();
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+
+    // Set up Ctrl+C handler
+    ctrlc::set_handler(move || {
+        println!("\n\nCtrl+C が押されました。プログラムを終了します...");
+        r.store(false, Ordering::SeqCst);
+    })
+    .expect("Error setting Ctrl-C handler");
+
+    let groups = read_student_ids(running);
+
+    if groups.is_empty() {
+        println!("\n入力されたデータがありません。");
+        return;
+    }
+
     let final_groups = reorganize_incomplete_groups(groups);
     print_groups(&final_groups);
 }
@@ -209,5 +343,18 @@ mod tests {
         assert_eq!(result.len(), 2);
         let complete_groups = result.iter().filter(|g| g.is_full()).count();
         assert_eq!(complete_groups, 1);
+    }
+
+    #[test]
+    fn test_atomic_flag_behavior() {
+        // Test that the atomic flag works correctly
+        let running = Arc::new(AtomicBool::new(true));
+        assert!(running.load(Ordering::SeqCst));
+
+        running.store(false, Ordering::SeqCst);
+        assert!(!running.load(Ordering::SeqCst));
+
+        running.store(true, Ordering::SeqCst);
+        assert!(running.load(Ordering::SeqCst));
     }
 }
