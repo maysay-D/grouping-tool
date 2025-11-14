@@ -55,6 +55,7 @@ fn read_student_ids(running: Arc<AtomicBool>) -> Vec<Group> {
     println!("学籍番号を入力してください (3人ごとにグループになります):");
     println!("  - Ctrl+D (Unix/Mac) または Ctrl+Z+Enter (Windows): 現在のグループを終了して次のグループへ");
     println!("  - Ctrl+C: プログラムを終了");
+    println!("  - 'delete:学籍番号' と入力すると、その学籍番号を削除できます（例: delete:S001）");
     println!();
 
     let mut group_index = 0;
@@ -105,21 +106,55 @@ fn read_student_ids(running: Arc<AtomicBool>) -> Vec<Group> {
                 Ok(student_id) => {
                     let student_id = student_id.trim().to_string();
                     if !student_id.is_empty() {
-                        current_group.add_member(student_id.clone());
-                        println!("  追加: {}", student_id);
+                        // Check if this is a delete command
+                        if student_id.to_lowercase().starts_with("delete:") {
+                            let id_to_delete = student_id[7..].trim().to_string();
+                            
+                            // Try to delete from current group first
+                            let mut deleted = false;
+                            if let Some(pos) = current_group.members.iter().position(|x| x == &id_to_delete) {
+                                current_group.members.remove(pos);
+                                println!("  ✓ 削除しました: {} (現在のグループから)", id_to_delete);
+                                deleted = true;
+                            }
+                            
+                            // If not found in current group, search in completed groups
+                            if !deleted {
+                                for (i, group) in groups.iter_mut().enumerate() {
+                                    if let Some(pos) = group.members.iter().position(|x| x == &id_to_delete) {
+                                        group.members.remove(pos);
+                                        println!(
+                                            "  ✓ 削除しました: {} (グループ {} から)",
+                                            id_to_delete,
+                                            group_index_to_letter(i)
+                                        );
+                                        deleted = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            if !deleted {
+                                println!("  ✗ エラー: {} は見つかりませんでした", id_to_delete);
+                            }
+                        } else {
+                            // Normal student ID addition
+                            current_group.add_member(student_id.clone());
+                            println!("  追加: {}", student_id);
 
-                        if current_group.is_full() {
-                            println!(
-                                "  ✓ グループ {} が完成しました (3人)",
-                                group_index_to_letter(group_index)
-                            );
-                            groups.push(current_group.clone());
-                            current_group = Group::new();
-                            group_index += 1;
-                            println!(
-                                "\n=== グループ {} の入力 ===",
-                                group_index_to_letter(group_index)
-                            );
+                            if current_group.is_full() {
+                                println!(
+                                    "  ✓ グループ {} が完成しました (3人)",
+                                    group_index_to_letter(group_index)
+                                );
+                                groups.push(current_group.clone());
+                                current_group = Group::new();
+                                group_index += 1;
+                                println!(
+                                    "\n=== グループ {} の入力 ===",
+                                    group_index_to_letter(group_index)
+                                );
+                            }
                         }
                     }
                 }
@@ -191,19 +226,64 @@ fn reorganize_incomplete_groups(groups: Vec<Group>) -> Vec<Group> {
     let mut rng = rand::thread_rng();
     incomplete_members.shuffle(&mut rng);
 
-    // Create new 3-person groups from the shuffled members
-    let mut new_group = Group::new();
-    for member in incomplete_members {
-        new_group.add_member(member);
-        if new_group.is_full() {
-            final_groups.push(new_group);
-            new_group = Group::new();
+    let n = incomplete_members.len();
+    
+    // NEW REQUIREMENT: Never create single-person groups
+    if n == 1 {
+        // If we have exactly 1 incomplete member and at least one complete group,
+        // add this member to the last complete group
+        if !final_groups.is_empty() {
+            if let Some(last_group) = final_groups.last_mut() {
+                last_group.members.push(incomplete_members.into_iter().next().unwrap());
+            }
+        } else {
+            // If we have no complete groups and only 1 member total, we cannot form valid groups
+            // This case should be handled by the caller
+            println!("警告: 1人だけではグループを作成できません。最低2人必要です。");
         }
+        return final_groups;
     }
 
-    // Requirement 5: Allow 2-person groups if total isn't divisible by 3
-    if !new_group.members.is_empty() {
-        final_groups.push(new_group);
+    // Create new groups from the shuffled members
+    // Strategy: create groups of 3, but ensure the last group has at least 2 members
+    let mut idx = 0;
+    while idx < n {
+        let remaining = n - idx;
+        
+        if remaining >= 3 {
+            // If we can make a group of 3 or more
+            let group_size = if remaining == 4 {
+                // Special case: 4 remaining should be split into 2+2, not 3+1
+                2
+            } else {
+                3
+            };
+            
+            let mut new_group = Group::new();
+            for _ in 0..group_size {
+                if idx < n {
+                    new_group.members.push(incomplete_members[idx].clone());
+                    idx += 1;
+                }
+            }
+            final_groups.push(new_group);
+        } else {
+            // remaining is 1 or 2
+            if remaining == 2 {
+                // Make a 2-person group
+                let mut new_group = Group::new();
+                new_group.members.push(incomplete_members[idx].clone());
+                new_group.members.push(incomplete_members[idx + 1].clone());
+                final_groups.push(new_group);
+                idx += 2;
+            } else {
+                // remaining == 1: add to the last group instead of creating a singleton
+                if let Some(last_group) = final_groups.last_mut() {
+                    last_group.members.push(incomplete_members[idx].clone());
+                    idx += 1;
+                }
+            }
+        }
     }
 
     final_groups
@@ -302,9 +382,14 @@ mod tests {
         let groups = vec![group1, group2];
         let result = reorganize_incomplete_groups(groups);
 
-        // 4 members should form 1 complete group and 1 incomplete group with 1 member
+        // 4 members should form 2 groups of 2 (not 3+1 which would create a singleton)
         let total_members: usize = result.iter().map(|g| g.members.len()).sum();
         assert_eq!(total_members, 4);
+        assert_eq!(result.len(), 2);
+        // Verify no single-person groups
+        for group in &result {
+            assert!(group.members.len() >= 2, "No group should have less than 2 members");
+        }
     }
 
     #[test]
@@ -339,10 +424,122 @@ mod tests {
         let groups = vec![group1, group2, group3];
         let result = reorganize_incomplete_groups(groups);
 
-        // Should have 1 complete group (unchanged) + 1 group with 2 members
+        // Should have 1 complete group (unchanged) + 1 group with 2 members (no singletons)
         assert_eq!(result.len(), 2);
         let complete_groups = result.iter().filter(|g| g.is_full()).count();
         assert_eq!(complete_groups, 1);
+        // Verify no single-person groups
+        for group in &result {
+            assert!(group.members.len() >= 2, "No group should have less than 2 members");
+        }
+    }
+
+    #[test]
+    fn test_no_single_person_groups_with_seven_students() {
+        // Test with 7 students (would normally be 3+3+1)
+        let groups = vec![
+            {
+                let mut g = Group::new();
+                g.add_member("S001".to_string());
+                g.add_member("S002".to_string());
+                g
+            },
+            {
+                let mut g = Group::new();
+                g.add_member("S003".to_string());
+                g.add_member("S004".to_string());
+                g
+            },
+            {
+                let mut g = Group::new();
+                g.add_member("S005".to_string());
+                g.add_member("S006".to_string());
+                g
+            },
+            {
+                let mut g = Group::new();
+                g.add_member("S007".to_string());
+                g
+            },
+        ];
+        
+        let result = reorganize_incomplete_groups(groups);
+
+        // Should not have any single-person groups
+        for group in &result {
+            assert!(group.members.len() >= 2, "No group should have less than 2 members");
+        }
+        
+        // Total should still be 7
+        let total: usize = result.iter().map(|g| g.members.len()).sum();
+        assert_eq!(total, 7);
+    }
+
+    #[test]
+    fn test_no_single_person_groups_with_ten_students() {
+        // Test with 10 students all incomplete (would normally be 3+3+3+1)
+        let groups = vec![
+            {
+                let mut g = Group::new();
+                g.add_member("S001".to_string());
+                g.add_member("S002".to_string());
+                g
+            },
+            {
+                let mut g = Group::new();
+                g.add_member("S003".to_string());
+                g.add_member("S004".to_string());
+                g
+            },
+            {
+                let mut g = Group::new();
+                g.add_member("S005".to_string());
+                g.add_member("S006".to_string());
+                g
+            },
+            {
+                let mut g = Group::new();
+                g.add_member("S007".to_string());
+                g.add_member("S008".to_string());
+                g
+            },
+            {
+                let mut g = Group::new();
+                g.add_member("S009".to_string());
+                g.add_member("S010".to_string());
+                g
+            },
+        ];
+
+        let result = reorganize_incomplete_groups(groups);
+
+        // Should not have any single-person groups
+        for group in &result {
+            assert!(group.members.len() >= 2, "No group should have less than 2 members");
+        }
+        
+        // Total should still be 10
+        let total: usize = result.iter().map(|g| g.members.len()).sum();
+        assert_eq!(total, 10);
+    }
+
+    #[test]
+    fn test_single_student_with_complete_group() {
+        // Test 1 incomplete student with 1 complete group
+        let mut complete_group = Group::new();
+        complete_group.add_member("S001".to_string());
+        complete_group.add_member("S002".to_string());
+        complete_group.add_member("S003".to_string());
+
+        let mut single_group = Group::new();
+        single_group.add_member("S004".to_string());
+
+        let groups = vec![complete_group, single_group];
+        let result = reorganize_incomplete_groups(groups);
+
+        // Should merge the single student into the complete group
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].members.len(), 4);
     }
 
     #[test]
