@@ -8,6 +8,23 @@ use std::sync::{
 
 type StudentId = String;
 
+// Convert a group index (0-based) to a letter (A, B, C, ...)
+fn group_index_to_letter(index: usize) -> String {
+    let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    if index < alphabet.len() {
+        alphabet.chars().nth(index).unwrap().to_string()
+    } else {
+        // For indices beyond Z, use AA, AB, AC, etc.
+        let first = (index / 26) - 1;
+        let second = index % 26;
+        format!(
+            "{}{}",
+            alphabet.chars().nth(first).unwrap(),
+            alphabet.chars().nth(second).unwrap()
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Group {
     members: Vec<StudentId>,
@@ -40,8 +57,11 @@ fn read_student_ids(running: Arc<AtomicBool>) -> Vec<Group> {
     println!("  - Ctrl+C: プログラムを終了");
     println!();
 
-    let mut group_number = 1;
-    println!("=== グループ {} の入力 ===", group_number);
+    let mut group_index = 0;
+    println!(
+        "=== グループ {} の入力 ===",
+        group_index_to_letter(group_index)
+    );
 
     // Check if stdin is a TTY (interactive terminal)
     let is_tty = if cfg!(unix) {
@@ -89,11 +109,17 @@ fn read_student_ids(running: Arc<AtomicBool>) -> Vec<Group> {
                         println!("  追加: {}", student_id);
 
                         if current_group.is_full() {
-                            println!("  ✓ グループ {} が完成しました (3人)", group_number);
+                            println!(
+                                "  ✓ グループ {} が完成しました (3人)",
+                                group_index_to_letter(group_index)
+                            );
                             groups.push(current_group.clone());
                             current_group = Group::new();
-                            group_number += 1;
-                            println!("\n=== グループ {} の入力 ===", group_number);
+                            group_index += 1;
+                            println!(
+                                "\n=== グループ {} の入力 ===",
+                                group_index_to_letter(group_index)
+                            );
                         }
                     }
                 }
@@ -115,16 +141,19 @@ fn read_student_ids(running: Arc<AtomicBool>) -> Vec<Group> {
             if !current_group.members.is_empty() {
                 println!(
                     "  ✓ グループ {} を保存しました ({} 人)",
-                    group_number,
+                    group_index_to_letter(group_index),
                     current_group.members.len()
                 );
                 groups.push(current_group.clone());
                 current_group = Group::new();
-                group_number += 1;
+                group_index += 1;
 
                 // Only continue for multiple groups if we're in interactive TTY mode with /dev/tty
                 if is_tty && cfg!(unix) && File::open("/dev/tty").is_ok() {
-                    println!("\n=== グループ {} の入力 ===", group_number);
+                    println!(
+                        "\n=== グループ {} の入力 ===",
+                        group_index_to_letter(group_index)
+                    );
                     // Continue loop to read next group
                     continue;
                 }
@@ -183,7 +212,11 @@ fn reorganize_incomplete_groups(groups: Vec<Group>) -> Vec<Group> {
 fn print_groups(groups: &[Group]) {
     println!("\n=== グループ分け結果 ===");
     for (i, group) in groups.iter().enumerate() {
-        println!("グループ {}: {} 人", i + 1, group.members.len());
+        println!(
+            "グループ {}: {} 人",
+            group_index_to_letter(i),
+            group.members.len()
+        );
         for member in &group.members {
             println!("  - {}", member);
         }
