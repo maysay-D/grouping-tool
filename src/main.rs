@@ -1,7 +1,10 @@
 use rand::seq::SliceRandom;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 type StudentId = String;
 
@@ -110,11 +113,15 @@ fn read_student_ids(running: Arc<AtomicBool>) -> Vec<Group> {
         if eof_encountered {
             // Save current group if it has members
             if !current_group.members.is_empty() {
-                println!("  ✓ グループ {} を保存しました ({} 人)", group_number, current_group.members.len());
+                println!(
+                    "  ✓ グループ {} を保存しました ({} 人)",
+                    group_number,
+                    current_group.members.len()
+                );
                 groups.push(current_group.clone());
                 current_group = Group::new();
                 group_number += 1;
-                
+
                 // Only continue for multiple groups if we're in interactive TTY mode with /dev/tty
                 if is_tty && cfg!(unix) && File::open("/dev/tty").is_ok() {
                     println!("\n=== グループ {} の入力 ===", group_number);
@@ -122,7 +129,7 @@ fn read_student_ids(running: Arc<AtomicBool>) -> Vec<Group> {
                     continue;
                 }
             }
-            
+
             // Exit the loop if not in interactive mode
             break;
         }
@@ -196,12 +203,12 @@ fn main() {
     .expect("Error setting Ctrl-C handler");
 
     let groups = read_student_ids(running);
-    
+
     if groups.is_empty() {
         println!("\n入力されたデータがありません。");
         return;
     }
-    
+
     let final_groups = reorganize_incomplete_groups(groups);
     print_groups(&final_groups);
 }
@@ -310,10 +317,10 @@ mod tests {
         // Test that the atomic flag works correctly
         let running = Arc::new(AtomicBool::new(true));
         assert!(running.load(Ordering::SeqCst));
-        
+
         running.store(false, Ordering::SeqCst);
         assert!(!running.load(Ordering::SeqCst));
-        
+
         running.store(true, Ordering::SeqCst);
         assert!(running.load(Ordering::SeqCst));
     }
