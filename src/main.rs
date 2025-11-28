@@ -293,124 +293,23 @@ fn split_into_small_groups(members: Vec<StudentId>) -> Vec<Group> {
     result
 }
 
-/// Create groups of 2-3 people from a list of singletons
-/// Uses the same logic as split_into_small_groups but is clearer about intent
-fn group_singletons(singletons: &mut Vec<StudentId>) -> Vec<Group> {
-    let mut groups: Vec<Group> = Vec::new();
-    
-    while singletons.len() >= 2 {
-        // When we have exactly 4, split into 2+2 to avoid creating 3+1 (which would leave a singleton)
-        let take_count = if singletons.len() == 4 { 2 } else { std::cmp::min(3, singletons.len()) };
-        let mut new_group = Group::new();
-        new_group.members = singletons.drain(0..take_count).collect();
-        groups.push(new_group);
-    }
-    
-    groups
-}
-
-/// Reorganize groups from batch mode - merge singletons and split groups larger than 3 into 2-3 person groups
-/// Preserves 2-person and 3-person groups as-is, only merging singletons when the group won't exceed 3 members
+/// Reorganize groups from batch mode - collect all members and create optimal groups
+/// 2-person groups are only created when the total is NOT divisible by 3 (at most 1-2 such groups)
+/// Maximizes 3-person groups as much as possible
 fn reorganize_batch_groups(groups: Vec<Group>) -> Vec<Group> {
     if groups.is_empty() {
         return groups;
     }
 
-    // First pass: split groups that are originally larger than 3 into 2-3 person groups
-    // This preserves original 2 and 3 person group structures
-    let mut split_groups: Vec<Group> = Vec::new();
-    
+    // Collect all members from all groups
+    let mut all_members: Vec<StudentId> = Vec::new();
     for group in groups {
-        if group.members.len() <= 3 {
-            split_groups.push(group);
-        } else {
-            // Split into 2-3 person groups
-            let small_groups = split_into_small_groups(group.members);
-            split_groups.extend(small_groups);
-        }
+        all_members.extend(group.members);
     }
-    
-    // Second pass: merge singletons with adjacent groups (only if they won't exceed 3)
-    let mut result_groups: Vec<Group> = Vec::new();
-    let mut pending_singletons: Vec<StudentId> = Vec::new();
-    
-    for group in split_groups {
-        if group.members.len() == 1 {
-            // Collect singleton member
-            pending_singletons.extend(group.members);
-            
-            // If we have 2 or 3 singletons, create a group immediately
-            if pending_singletons.len() >= 2 && pending_singletons.len() <= 3 {
-                let mut new_group = Group::new();
-                new_group.members = pending_singletons.drain(..).collect();
-                result_groups.push(new_group);
-            }
-        } else {
-            // Try to add pending singletons to previous group first
-            if !pending_singletons.is_empty() {
-                if let Some(last_group) = result_groups.last_mut() {
-                    let slots = 3 - last_group.members.len();
-                    let take = std::cmp::min(slots, pending_singletons.len());
-                    if take > 0 {
-                        last_group.members.extend(pending_singletons.drain(0..take));
-                    }
-                }
-                
-                // Create groups from remaining singletons
-                result_groups.extend(group_singletons(&mut pending_singletons));
-            }
-            
-            // Add current group, possibly merging remaining singleton
-            if pending_singletons.len() == 1 && group.members.len() < 3 {
-                let mut merged_group = group;
-                merged_group.members.insert(0, pending_singletons.drain(..).next().unwrap());
-                result_groups.push(merged_group);
-            } else {
-                result_groups.push(group);
-            }
-        }
-    }
-    
-    // Handle remaining singletons at the end
-    if !pending_singletons.is_empty() {
-        // Try to merge with the last group if it has space
-        if let Some(last_group) = result_groups.last_mut() {
-            let slots = 3 - last_group.members.len();
-            let take = std::cmp::min(slots, pending_singletons.len());
-            if take > 0 {
-                last_group.members.extend(pending_singletons.drain(0..take));
-            }
-        }
-        
-        // Create groups from remaining singletons
-        result_groups.extend(group_singletons(&mut pending_singletons));
-        
-        // If there's still a single person left, we need to add them somewhere
-        if pending_singletons.len() == 1 {
-            if let Some(last_group) = result_groups.last_mut() {
-                // Add to last group even if it exceeds 3 (we'll need to split later)
-                last_group.members.extend(pending_singletons.drain(..));
-            } else {
-                // No groups at all - this is an edge case (only 1 person total)
-                let mut new_group = Group::new();
-                new_group.members = pending_singletons;
-                result_groups.push(new_group);
-            }
-        }
-    }
-    
-    // Final pass: ensure no groups exceed 3 members
-    let mut final_groups: Vec<Group> = Vec::new();
-    for group in result_groups {
-        if group.members.len() <= 3 {
-            final_groups.push(group);
-        } else {
-            let small_groups = split_into_small_groups(group.members);
-            final_groups.extend(small_groups);
-        }
-    }
-    
-    final_groups
+
+    // Use split_into_small_groups to create optimal groupings
+    // This maximizes 3-person groups and only creates 2-person groups when n % 3 != 0
+    split_into_small_groups(all_members)
 }
 
 fn reorganize_incomplete_groups(groups: Vec<Group>) -> Vec<Group> {
@@ -782,8 +681,8 @@ mod tests {
     }
 
     #[test]
-    fn test_reorganize_batch_groups_preserves_groups() {
-        // Test that batch groups are preserved as-is
+    fn test_reorganize_batch_groups_five_members() {
+        // Test that 5 members (5 % 3 == 2) creates 1 three-person + 1 two-person group
         let mut group1 = Group::new();
         group1.members = vec!["A".to_string(), "B".to_string(), "C".to_string()];
 
@@ -793,15 +692,15 @@ mod tests {
         let groups = vec![group1, group2];
         let result = reorganize_batch_groups(groups);
 
-        // Groups should be preserved
+        // 5 members should become 3+2 (optimal grouping)
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].members.len(), 3);
         assert_eq!(result[1].members.len(), 2);
     }
 
     #[test]
-    fn test_reorganize_batch_groups_merges_singleton() {
-        // Test that singletons are merged with previous group
+    fn test_reorganize_batch_groups_three_members() {
+        // Test that 3 members form a single 3-person group
         let mut group1 = Group::new();
         group1.members = vec!["A".to_string(), "B".to_string()];
 
@@ -811,7 +710,7 @@ mod tests {
         let groups = vec![group1, group2];
         let result = reorganize_batch_groups(groups);
 
-        // Singleton should be merged with previous group
+        // 3 members should form one 3-person group
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].members.len(), 3);
         assert!(result[0].members.contains(&"A".to_string()));
@@ -820,8 +719,8 @@ mod tests {
     }
 
     #[test]
-    fn test_reorganize_batch_groups_singleton_at_start() {
-        // Test that singleton at the start is merged with next group
+    fn test_reorganize_batch_groups_three_members_reverse_order() {
+        // Test that 3 members form a single 3-person group (different input order)
         let mut group1 = Group::new();
         group1.members = vec!["A".to_string()]; // singleton at start
 
@@ -831,14 +730,14 @@ mod tests {
         let groups = vec![group1, group2];
         let result = reorganize_batch_groups(groups);
 
-        // Singleton at start should be merged with next group
+        // 3 members should form one 3-person group
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].members.len(), 3);
     }
 
     #[test]
-    fn test_reorganize_batch_groups_multiple_singletons() {
-        // Test multiple singletons are grouped together, preserving existing 2-person group
+    fn test_reorganize_batch_groups_four_members() {
+        // Test that 4 members (4 % 3 == 1) creates 2 two-person groups
         let mut group1 = Group::new();
         group1.members = vec!["A".to_string(), "B".to_string()];
 
@@ -851,12 +750,13 @@ mod tests {
         let groups = vec![group1, group2, group3];
         let result = reorganize_batch_groups(groups);
 
-        // Original 2-person group [A, B] should be preserved, singletons [C, D] form new group
+        // 4 members should become 2+2 (two two-person groups)
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].members.len(), 2);
+        assert_eq!(result[1].members.len(), 2);
+        // Order is preserved from input
         assert!(result[0].members.contains(&"A".to_string()));
         assert!(result[0].members.contains(&"B".to_string()));
-        assert_eq!(result[1].members.len(), 2);
         assert!(result[1].members.contains(&"C".to_string()));
         assert!(result[1].members.contains(&"D".to_string()));
     }
@@ -928,5 +828,64 @@ mod tests {
             let total_after: usize = result.iter().map(|g| g.members.len()).sum();
             assert_eq!(total_after, total, "Total members should be preserved");
         }
+    }
+
+    #[test]
+    fn test_two_person_groups_only_when_not_divisible_by_three() {
+        // Verify that 2-person groups are only created when total % 3 != 0
+        // When total % 3 == 0: 0 two-person groups
+        // When total % 3 == 1: 2 two-person groups (to avoid 1-person groups)
+        // When total % 3 == 2: 1 two-person group
+        for total in 2..=30 {
+            let mut group = Group::new();
+            for i in 0..total {
+                group.members.push(format!("S{:03}", i));
+            }
+            let groups = vec![group];
+            let result = reorganize_batch_groups(groups);
+            
+            let two_person_count = result.iter().filter(|g| g.members.len() == 2).count();
+            let remainder = total % 3;
+            
+            let expected_two_person_groups = match remainder {
+                0 => 0, // Divisible by 3, no 2-person groups
+                1 => 2, // 1 remainder -> need 2 two-person groups (e.g., 4 = 2+2)
+                2 => 1, // 2 remainder -> need 1 two-person group (e.g., 5 = 3+2)
+                _ => unreachable!(),
+            };
+            
+            assert_eq!(
+                two_person_count, expected_two_person_groups,
+                "For {} members (remainder {}), expected {} two-person groups but got {}",
+                total, remainder, expected_two_person_groups, two_person_count
+            );
+        }
+    }
+
+    #[test]
+    fn test_batch_mode_maximizes_three_person_groups() {
+        // Test that batch mode now maximizes 3-person groups even with user-defined 2-person groups
+        // 12 members with user-defined 2-person groups should become 4 three-person groups
+        let groups: Vec<Group> = (0..6).map(|i| {
+            let mut g = Group::new();
+            g.members = vec![
+                format!("S{:03}", i * 2),
+                format!("S{:03}", i * 2 + 1),
+            ];
+            g
+        }).collect();
+        
+        let result = reorganize_batch_groups(groups);
+        
+        // 12 members (12 % 3 == 0) should all be 3-person groups
+        let three_person_count = result.iter().filter(|g| g.members.len() == 3).count();
+        let two_person_count = result.iter().filter(|g| g.members.len() == 2).count();
+        
+        assert_eq!(three_person_count, 4, "Should have 4 three-person groups");
+        assert_eq!(two_person_count, 0, "Should have 0 two-person groups when divisible by 3");
+        
+        // Verify total is preserved
+        let total: usize = result.iter().map(|g| g.members.len()).sum();
+        assert_eq!(total, 12);
     }
 }
