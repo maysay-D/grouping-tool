@@ -248,37 +248,85 @@ fn read_student_ids(running: Arc<AtomicBool>) -> (Vec<Group>, bool) {
     (groups, batch_mode)
 }
 
-/// Reorganize groups from batch mode - keep groups as-is but merge singletons
+/// Helper function to split a list of members into groups of 2-3 people
+fn split_into_small_groups(members: Vec<StudentId>) -> Vec<Group> {
+    let mut result: Vec<Group> = Vec::new();
+    let n = members.len();
+    
+    if n == 0 {
+        return result;
+    }
+    
+    let mut idx = 0;
+    while idx < n {
+        let remaining = n - idx;
+        
+        let group_size = if remaining >= 3 {
+            if remaining == 4 {
+                // 4 -> 2 + 2
+                2
+            } else {
+                3
+            }
+        } else {
+            // 1 or 2 remaining
+            remaining
+        };
+        
+        let mut new_group = Group::new();
+        for _ in 0..group_size {
+            if idx < n {
+                new_group.members.push(members[idx].clone());
+                idx += 1;
+            }
+        }
+        result.push(new_group);
+    }
+    
+    result
+}
+
+/// Reorganize groups from batch mode - merge singletons and split groups larger than 3 into 2-3 person groups
 fn reorganize_batch_groups(groups: Vec<Group>) -> Vec<Group> {
     if groups.is_empty() {
         return groups;
     }
 
-    let mut result_groups: Vec<Group> = Vec::new();
+    // First pass: merge singletons with adjacent groups
+    let mut merged_groups: Vec<Group> = Vec::new();
     
     for group in groups {
         if group.members.len() == 1 {
             // Singleton - try to merge with the last group
-            if let Some(last_group) = result_groups.last_mut() {
+            if let Some(last_group) = merged_groups.last_mut() {
                 last_group.members.extend(group.members);
             } else {
                 // First group is a singleton, keep it for now
-                result_groups.push(group);
+                merged_groups.push(group);
             }
         } else {
-            result_groups.push(group);
+            merged_groups.push(group);
         }
     }
     
-    // Final check: if the first group is still a singleton, merge with next
-    // We only attempt this if there are at least 2 groups (so after removing the first,
-    // there's still at least one group to merge into)
-    if result_groups.len() > 1 && result_groups[0].members.len() == 1 {
-        // Safe to pop: we verified there's exactly 1 member above
-        if let Some(singleton_member) = result_groups[0].members.pop() {
-            result_groups.remove(0);
-            // Safe to use [0]: we had > 1 groups and removed one, so at least 1 remains
-            result_groups[0].members.insert(0, singleton_member);
+    // Handle singleton at the start
+    if merged_groups.len() > 1 && merged_groups[0].members.len() == 1 {
+        if let Some(singleton_member) = merged_groups[0].members.pop() {
+            merged_groups.remove(0);
+            merged_groups[0].members.insert(0, singleton_member);
+        }
+    }
+    
+    // Second pass: split groups larger than 3 into 2-3 person groups
+    let mut result_groups: Vec<Group> = Vec::new();
+    
+    for group in merged_groups {
+        if group.members.len() <= 3 {
+            result_groups.push(group);
+        } else {
+            // Split into 2-3 person groups
+            let small_groups = split_into_small_groups(group.members);
+            result_groups.extend(small_groups);
         }
     }
     
@@ -710,7 +758,7 @@ mod tests {
 
     #[test]
     fn test_reorganize_batch_groups_multiple_singletons() {
-        // Test multiple singletons are merged sequentially
+        // Test multiple singletons are merged sequentially, then split if > 3
         let mut group1 = Group::new();
         group1.members = vec!["A".to_string(), "B".to_string()];
 
@@ -723,8 +771,78 @@ mod tests {
         let groups = vec![group1, group2, group3];
         let result = reorganize_batch_groups(groups);
 
-        // Both singletons should be merged with the first group
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].members.len(), 4);
+        // Both singletons merged (4 total) -> split into 2+2
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].members.len(), 2);
+        assert_eq!(result[1].members.len(), 2);
+    }
+
+    #[test]
+    fn test_reorganize_batch_groups_splits_large_group() {
+        // Test that a 4-person group is split into 2+2
+        let mut group1 = Group::new();
+        group1.members = vec!["A".to_string(), "B".to_string(), "C".to_string(), "D".to_string()];
+
+        let groups = vec![group1];
+        let result = reorganize_batch_groups(groups);
+
+        // 4-person group should be split into 2+2
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].members.len(), 2);
+        assert_eq!(result[1].members.len(), 2);
+    }
+
+    #[test]
+    fn test_reorganize_batch_groups_splits_five_person_group() {
+        // Test that a 5-person group is split into 3+2
+        let mut group1 = Group::new();
+        group1.members = vec!["A".to_string(), "B".to_string(), "C".to_string(), "D".to_string(), "E".to_string()];
+
+        let groups = vec![group1];
+        let result = reorganize_batch_groups(groups);
+
+        // 5-person group should be split into 3+2
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].members.len(), 3);
+        assert_eq!(result[1].members.len(), 2);
+    }
+
+    #[test]
+    fn test_reorganize_batch_groups_splits_seven_person_group() {
+        // Test that a 7-person group is split into 3+2+2
+        let mut group1 = Group::new();
+        group1.members = vec![
+            "A".to_string(), "B".to_string(), "C".to_string(), "D".to_string(),
+            "E".to_string(), "F".to_string(), "G".to_string()
+        ];
+
+        let groups = vec![group1];
+        let result = reorganize_batch_groups(groups);
+
+        // 7-person group should be split into 3+2+2
+        assert_eq!(result.len(), 3);
+        let sizes: Vec<usize> = result.iter().map(|g| g.members.len()).collect();
+        assert_eq!(sizes, vec![3, 2, 2]);
+    }
+
+    #[test]
+    fn test_reorganize_batch_groups_no_single_person_groups() {
+        // Verify that no single-person groups are ever created
+        for total in 2..=20 {
+            let mut group = Group::new();
+            for i in 0..total {
+                group.members.push(format!("S{:03}", i));
+            }
+            let groups = vec![group];
+            let result = reorganize_batch_groups(groups);
+            
+            for g in &result {
+                assert!(g.members.len() >= 2, "Group with {} members found for total {}", g.members.len(), total);
+                assert!(g.members.len() <= 3, "Group with {} members found for total {}", g.members.len(), total);
+            }
+            
+            let total_after: usize = result.iter().map(|g| g.members.len()).sum();
+            assert_eq!(total_after, total, "Total members should be preserved");
+        }
     }
 }
