@@ -53,13 +53,29 @@ fn read_student_ids(running: Arc<AtomicBool>) -> (Vec<Group>, bool) {
     let mut current_group = Group::new();
 
     // Check if stdin is a TTY (interactive terminal)
-    let is_tty = if cfg!(unix) {
+    #[cfg(unix)]
+    let is_tty = {
         use std::os::unix::io::AsRawFd;
         unsafe { libc::isatty(io::stdin().as_raw_fd()) == 1 }
-    } else {
-        // On Windows, assume interactive for now
-        true
     };
+
+    #[cfg(windows)]
+    let is_tty = {
+        use std::os::windows::io::AsRawHandle;
+        let handle = io::stdin().as_raw_handle();
+        let mut mode: u32 = 0;
+        // GetConsoleMode returns 0 if the handle is not a console
+        unsafe {
+            #[link(name = "kernel32")]
+            extern "system" {
+                fn GetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, lpMode: *mut u32) -> i32;
+            }
+            GetConsoleMode(handle as *mut std::ffi::c_void, &mut mode) != 0
+        }
+    };
+
+    #[cfg(not(any(unix, windows)))]
+    let is_tty = true;
 
     // In batch mode (non-interactive), blank lines separate groups
     let batch_mode = !is_tty;
@@ -69,7 +85,6 @@ fn read_student_ids(running: Arc<AtomicBool>) -> (Vec<Group>, bool) {
         println!("  - Ctrl+D (Unix/Mac) または Ctrl+Z+Enter (Windows): 現在のグループを終了して次のグループへ");
         println!("  - Ctrl+C: プログラムを終了");
         println!("  - 'delete:学籍番号' と入力すると、その学籍番号を削除できます（例: delete:S001）");
-        println!("  - バッチモード: パイプ/リダイレクトで入力時、空行でグループを区切れます");
         println!();
     }
 
@@ -256,11 +271,14 @@ fn reorganize_batch_groups(groups: Vec<Group>) -> Vec<Group> {
     }
     
     // Final check: if the first group is still a singleton, merge with next
+    // We only attempt this if there are at least 2 groups (so after removing the first,
+    // there's still at least one group to merge into)
     if result_groups.len() > 1 && result_groups[0].members.len() == 1 {
-        let singleton_member = result_groups[0].members.pop().unwrap();
-        result_groups.remove(0);
-        if let Some(first_group) = result_groups.first_mut() {
-            first_group.members.insert(0, singleton_member);
+        // Safe to pop: we verified there's exactly 1 member above
+        if let Some(singleton_member) = result_groups[0].members.pop() {
+            result_groups.remove(0);
+            // Safe to use [0]: we had > 1 groups and removed one, so at least 1 remains
+            result_groups[0].members.insert(0, singleton_member);
         }
     }
     
