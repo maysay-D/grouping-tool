@@ -293,6 +293,22 @@ fn split_into_small_groups(members: Vec<StudentId>) -> Vec<Group> {
     result
 }
 
+/// Create groups of 2-3 people from a list of singletons
+/// Uses the same logic as split_into_small_groups but is clearer about intent
+fn group_singletons(singletons: &mut Vec<StudentId>) -> Vec<Group> {
+    let mut groups: Vec<Group> = Vec::new();
+    
+    while singletons.len() >= 2 {
+        // When we have exactly 4, split into 2+2 to avoid creating 3+1 (which would leave a singleton)
+        let take_count = if singletons.len() == 4 { 2 } else { std::cmp::min(3, singletons.len()) };
+        let mut new_group = Group::new();
+        new_group.members = singletons.drain(0..take_count).collect();
+        groups.push(new_group);
+    }
+    
+    groups
+}
+
 /// Reorganize groups from batch mode - merge singletons and split groups larger than 3 into 2-3 person groups
 /// Preserves 2-person and 3-person groups as-is, only merging singletons when the group won't exceed 3 members
 fn reorganize_batch_groups(groups: Vec<Group>) -> Vec<Group> {
@@ -323,13 +339,8 @@ fn reorganize_batch_groups(groups: Vec<Group>) -> Vec<Group> {
             // Collect singleton member
             pending_singletons.extend(group.members);
             
-            // If we have 2 singletons, create a 2-person group
-            if pending_singletons.len() == 2 {
-                let mut new_group = Group::new();
-                new_group.members = pending_singletons.drain(..).collect();
-                result_groups.push(new_group);
-            } else if pending_singletons.len() == 3 {
-                // If we have 3 singletons, create a 3-person group
+            // If we have 2 or 3 singletons, create a group immediately
+            if pending_singletons.len() >= 2 && pending_singletons.len() <= 3 {
                 let mut new_group = Group::new();
                 new_group.members = pending_singletons.drain(..).collect();
                 result_groups.push(new_group);
@@ -338,26 +349,21 @@ fn reorganize_batch_groups(groups: Vec<Group>) -> Vec<Group> {
             // Try to add pending singletons to previous group first
             if !pending_singletons.is_empty() {
                 if let Some(last_group) = result_groups.last_mut() {
-                    while !pending_singletons.is_empty() && last_group.members.len() < 3 {
-                        last_group.members.push(pending_singletons.remove(0));
+                    let slots = 3 - last_group.members.len();
+                    let take = std::cmp::min(slots, pending_singletons.len());
+                    if take > 0 {
+                        last_group.members.extend(pending_singletons.drain(0..take));
                     }
                 }
                 
                 // Create groups from remaining singletons
-                while pending_singletons.len() >= 2 {
-                    let mut new_group = Group::new();
-                    let take_count = if pending_singletons.len() == 4 { 2 } else { std::cmp::min(3, pending_singletons.len()) };
-                    for _ in 0..take_count {
-                        new_group.members.push(pending_singletons.remove(0));
-                    }
-                    result_groups.push(new_group);
-                }
+                result_groups.extend(group_singletons(&mut pending_singletons));
             }
             
             // Add current group, possibly merging remaining singleton
             if pending_singletons.len() == 1 && group.members.len() < 3 {
                 let mut merged_group = group;
-                merged_group.members.insert(0, pending_singletons.remove(0));
+                merged_group.members.insert(0, pending_singletons.drain(..).next().unwrap());
                 result_groups.push(merged_group);
             } else {
                 result_groups.push(group);
@@ -369,26 +375,21 @@ fn reorganize_batch_groups(groups: Vec<Group>) -> Vec<Group> {
     if !pending_singletons.is_empty() {
         // Try to merge with the last group if it has space
         if let Some(last_group) = result_groups.last_mut() {
-            while !pending_singletons.is_empty() && last_group.members.len() < 3 {
-                last_group.members.push(pending_singletons.remove(0));
+            let slots = 3 - last_group.members.len();
+            let take = std::cmp::min(slots, pending_singletons.len());
+            if take > 0 {
+                last_group.members.extend(pending_singletons.drain(0..take));
             }
         }
         
         // Create groups from remaining singletons
-        while pending_singletons.len() >= 2 {
-            let mut new_group = Group::new();
-            let take_count = if pending_singletons.len() == 4 { 2 } else { std::cmp::min(3, pending_singletons.len()) };
-            for _ in 0..take_count {
-                new_group.members.push(pending_singletons.remove(0));
-            }
-            result_groups.push(new_group);
-        }
+        result_groups.extend(group_singletons(&mut pending_singletons));
         
         // If there's still a single person left, we need to add them somewhere
         if pending_singletons.len() == 1 {
             if let Some(last_group) = result_groups.last_mut() {
-                // Add to last group even if it exceeds 3 (we'll need to split)
-                last_group.members.push(pending_singletons.remove(0));
+                // Add to last group even if it exceeds 3 (we'll need to split later)
+                last_group.members.extend(pending_singletons.drain(..));
             } else {
                 // No groups at all - this is an edge case (only 1 person total)
                 let mut new_group = Group::new();
