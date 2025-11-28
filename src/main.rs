@@ -48,21 +48,9 @@ impl Group {
     }
 }
 
-fn read_student_ids(running: Arc<AtomicBool>) -> Vec<Group> {
+fn read_student_ids(running: Arc<AtomicBool>) -> (Vec<Group>, bool) {
     let mut groups = Vec::new();
     let mut current_group = Group::new();
-
-    println!("学籍番号を入力してください (3人ごとにグループになります):");
-    println!("  - Ctrl+D (Unix/Mac) または Ctrl+Z+Enter (Windows): 現在のグループを終了して次のグループへ");
-    println!("  - Ctrl+C: プログラムを終了");
-    println!("  - 'delete:学籍番号' と入力すると、その学籍番号を削除できます（例: delete:S001）");
-    println!();
-
-    let mut group_index = 0;
-    println!(
-        "=== グループ {} の入力 ===",
-        group_index_to_letter(group_index)
-    );
 
     // Check if stdin is a TTY (interactive terminal)
     let is_tty = if cfg!(unix) {
@@ -72,6 +60,26 @@ fn read_student_ids(running: Arc<AtomicBool>) -> Vec<Group> {
         // On Windows, assume interactive for now
         true
     };
+
+    // In batch mode (non-interactive), blank lines separate groups
+    let batch_mode = !is_tty;
+
+    if !batch_mode {
+        println!("学籍番号を入力してください (3人ごとにグループになります):");
+        println!("  - Ctrl+D (Unix/Mac) または Ctrl+Z+Enter (Windows): 現在のグループを終了して次のグループへ");
+        println!("  - Ctrl+C: プログラムを終了");
+        println!("  - 'delete:学籍番号' と入力すると、その学籍番号を削除できます（例: delete:S001）");
+        println!("  - バッチモード: パイプ/リダイレクトで入力時、空行でグループを区切れます");
+        println!();
+    }
+
+    let mut group_index = 0;
+    if !batch_mode {
+        println!(
+            "=== グループ {} の入力 ===",
+            group_index_to_letter(group_index)
+        );
+    }
 
     loop {
         // Check if Ctrl+C was pressed
@@ -99,46 +107,62 @@ fn read_student_ids(running: Arc<AtomicBool>) -> Vec<Group> {
                 if !current_group.members.is_empty() {
                     groups.push(current_group.clone());
                 }
-                return groups;
+                return (groups, batch_mode);
             }
 
             match line {
                 Ok(student_id) => {
                     let student_id = student_id.trim().to_string();
-                    if !student_id.is_empty() {
-                        // Check if this is a delete command
-                        if student_id.to_lowercase().starts_with("delete:") {
-                            let id_to_delete = student_id[7..].trim().to_string();
-                            
-                            // Try to delete from current group first
-                            let mut deleted = false;
-                            if let Some(pos) = current_group.members.iter().position(|x| x == &id_to_delete) {
-                                current_group.members.remove(pos);
-                                println!("  ✓ 削除しました: {} (現在のグループから)", id_to_delete);
-                                deleted = true;
-                            }
-                            
-                            // If not found in current group, search in completed groups
-                            if !deleted {
-                                for (i, group) in groups.iter_mut().enumerate() {
-                                    if let Some(pos) = group.members.iter().position(|x| x == &id_to_delete) {
-                                        group.members.remove(pos);
-                                        println!(
-                                            "  ✓ 削除しました: {} (グループ {} から)",
-                                            id_to_delete,
-                                            group_index_to_letter(i)
-                                        );
-                                        deleted = true;
-                                        break;
-                                    }
+                    
+                    // In batch mode, empty lines separate groups
+                    if student_id.is_empty() {
+                        if batch_mode && !current_group.members.is_empty() {
+                            // Save current group and start a new one
+                            groups.push(current_group.clone());
+                            current_group = Group::new();
+                            group_index += 1;
+                        }
+                        continue;
+                    }
+                    
+                    // Check if this is a delete command
+                    if student_id.to_lowercase().starts_with("delete:") {
+                        let id_to_delete = student_id[7..].trim().to_string();
+                        
+                        // Try to delete from current group first
+                        let mut deleted = false;
+                        if let Some(pos) = current_group.members.iter().position(|x| x == &id_to_delete) {
+                            current_group.members.remove(pos);
+                            println!("  ✓ 削除しました: {} (現在のグループから)", id_to_delete);
+                            deleted = true;
+                        }
+                        
+                        // If not found in current group, search in completed groups
+                        if !deleted {
+                            for (i, group) in groups.iter_mut().enumerate() {
+                                if let Some(pos) = group.members.iter().position(|x| x == &id_to_delete) {
+                                    group.members.remove(pos);
+                                    println!(
+                                        "  ✓ 削除しました: {} (グループ {} から)",
+                                        id_to_delete,
+                                        group_index_to_letter(i)
+                                    );
+                                    deleted = true;
+                                    break;
                                 }
                             }
-                            
-                            if !deleted {
-                                println!("  ✗ エラー: {} は見つかりませんでした", id_to_delete);
-                            }
+                        }
+                        
+                        if !deleted {
+                            println!("  ✗ エラー: {} は見つかりませんでした", id_to_delete);
+                        }
+                    } else {
+                        // Normal student ID addition
+                        if batch_mode {
+                            // In batch mode, groups are unlimited in size (no 3-person limit)
+                            current_group.members.push(student_id.clone());
                         } else {
-                            // Normal student ID addition
+                            // In interactive mode, use the 3-person limit
                             current_group.add_member(student_id.clone());
                             println!("  追加: {}", student_id);
 
@@ -174,11 +198,13 @@ fn read_student_ids(running: Arc<AtomicBool>) -> Vec<Group> {
         if eof_encountered {
             // Save current group if it has members
             if !current_group.members.is_empty() {
-                println!(
-                    "  ✓ グループ {} を保存しました ({} 人)",
-                    group_index_to_letter(group_index),
-                    current_group.members.len()
-                );
+                if !batch_mode {
+                    println!(
+                        "  ✓ グループ {} を保存しました ({} 人)",
+                        group_index_to_letter(group_index),
+                        current_group.members.len()
+                    );
+                }
                 groups.push(current_group.clone());
                 current_group = Group::new();
                 group_index += 1;
@@ -204,7 +230,41 @@ fn read_student_ids(running: Arc<AtomicBool>) -> Vec<Group> {
         groups.push(current_group);
     }
 
-    groups
+    (groups, batch_mode)
+}
+
+/// Reorganize groups from batch mode - keep groups as-is but merge singletons
+fn reorganize_batch_groups(groups: Vec<Group>) -> Vec<Group> {
+    if groups.is_empty() {
+        return groups;
+    }
+
+    let mut result_groups: Vec<Group> = Vec::new();
+    
+    for group in groups {
+        if group.members.len() == 1 {
+            // Singleton - try to merge with the last group
+            if let Some(last_group) = result_groups.last_mut() {
+                last_group.members.extend(group.members);
+            } else {
+                // First group is a singleton, keep it for now
+                result_groups.push(group);
+            }
+        } else {
+            result_groups.push(group);
+        }
+    }
+    
+    // Final check: if the first group is still a singleton, merge with next
+    if result_groups.len() > 1 && result_groups[0].members.len() == 1 {
+        let singleton_member = result_groups[0].members.pop().unwrap();
+        result_groups.remove(0);
+        if let Some(first_group) = result_groups.first_mut() {
+            first_group.members.insert(0, singleton_member);
+        }
+    }
+    
+    result_groups
 }
 
 fn reorganize_incomplete_groups(groups: Vec<Group>) -> Vec<Group> {
@@ -327,14 +387,21 @@ fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
-    let groups = read_student_ids(running);
+    let (groups, batch_mode) = read_student_ids(running);
 
     if groups.is_empty() {
         println!("\n入力されたデータがありません。");
         return;
     }
 
-    let final_groups = reorganize_incomplete_groups(groups);
+    // Use different reorganization logic based on mode
+    let final_groups = if batch_mode {
+        // Batch mode: preserve group structure, only merge singletons
+        reorganize_batch_groups(groups)
+    } else {
+        // Interactive mode: reorganize incomplete groups
+        reorganize_incomplete_groups(groups)
+    };
     print_groups(&final_groups);
 }
 
@@ -566,5 +633,80 @@ mod tests {
 
         running.store(true, Ordering::SeqCst);
         assert!(running.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_reorganize_batch_groups_preserves_groups() {
+        // Test that batch groups are preserved as-is
+        let mut group1 = Group::new();
+        group1.members = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+
+        let mut group2 = Group::new();
+        group2.members = vec!["D".to_string(), "E".to_string()];
+
+        let groups = vec![group1, group2];
+        let result = reorganize_batch_groups(groups);
+
+        // Groups should be preserved
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].members.len(), 3);
+        assert_eq!(result[1].members.len(), 2);
+    }
+
+    #[test]
+    fn test_reorganize_batch_groups_merges_singleton() {
+        // Test that singletons are merged with previous group
+        let mut group1 = Group::new();
+        group1.members = vec!["A".to_string(), "B".to_string()];
+
+        let mut group2 = Group::new();
+        group2.members = vec!["C".to_string()]; // singleton
+
+        let groups = vec![group1, group2];
+        let result = reorganize_batch_groups(groups);
+
+        // Singleton should be merged with previous group
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].members.len(), 3);
+        assert!(result[0].members.contains(&"A".to_string()));
+        assert!(result[0].members.contains(&"B".to_string()));
+        assert!(result[0].members.contains(&"C".to_string()));
+    }
+
+    #[test]
+    fn test_reorganize_batch_groups_singleton_at_start() {
+        // Test that singleton at the start is merged with next group
+        let mut group1 = Group::new();
+        group1.members = vec!["A".to_string()]; // singleton at start
+
+        let mut group2 = Group::new();
+        group2.members = vec!["B".to_string(), "C".to_string()];
+
+        let groups = vec![group1, group2];
+        let result = reorganize_batch_groups(groups);
+
+        // Singleton at start should be merged with next group
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].members.len(), 3);
+    }
+
+    #[test]
+    fn test_reorganize_batch_groups_multiple_singletons() {
+        // Test multiple singletons are merged sequentially
+        let mut group1 = Group::new();
+        group1.members = vec!["A".to_string(), "B".to_string()];
+
+        let mut group2 = Group::new();
+        group2.members = vec!["C".to_string()]; // singleton
+
+        let mut group3 = Group::new();
+        group3.members = vec!["D".to_string()]; // singleton
+
+        let groups = vec![group1, group2, group3];
+        let result = reorganize_batch_groups(groups);
+
+        // Both singletons should be merged with the first group
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].members.len(), 4);
     }
 }
