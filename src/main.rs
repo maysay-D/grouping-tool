@@ -294,50 +294,122 @@ fn split_into_small_groups(members: Vec<StudentId>) -> Vec<Group> {
 }
 
 /// Reorganize groups from batch mode - merge singletons and split groups larger than 3 into 2-3 person groups
+/// Preserves 2-person and 3-person groups as-is, only merging singletons when the group won't exceed 3 members
 fn reorganize_batch_groups(groups: Vec<Group>) -> Vec<Group> {
     if groups.is_empty() {
         return groups;
     }
 
-    // First pass: merge singletons with adjacent groups
-    let mut merged_groups: Vec<Group> = Vec::new();
+    // First pass: split groups that are originally larger than 3 into 2-3 person groups
+    // This preserves original 2 and 3 person group structures
+    let mut split_groups: Vec<Group> = Vec::new();
     
     for group in groups {
-        if group.members.len() == 1 {
-            // Singleton - try to merge with the last group
-            if let Some(last_group) = merged_groups.last_mut() {
-                last_group.members.extend(group.members);
-            } else {
-                // First group is a singleton, keep it for now
-                merged_groups.push(group);
-            }
-        } else {
-            merged_groups.push(group);
-        }
-    }
-    
-    // Handle singleton at the start
-    if merged_groups.len() > 1 && merged_groups[0].members.len() == 1 {
-        if let Some(singleton_member) = merged_groups[0].members.pop() {
-            merged_groups.remove(0);
-            merged_groups[0].members.insert(0, singleton_member);
-        }
-    }
-    
-    // Second pass: split groups larger than 3 into 2-3 person groups
-    let mut result_groups: Vec<Group> = Vec::new();
-    
-    for group in merged_groups {
         if group.members.len() <= 3 {
-            result_groups.push(group);
+            split_groups.push(group);
         } else {
             // Split into 2-3 person groups
             let small_groups = split_into_small_groups(group.members);
-            result_groups.extend(small_groups);
+            split_groups.extend(small_groups);
         }
     }
     
-    result_groups
+    // Second pass: merge singletons with adjacent groups (only if they won't exceed 3)
+    let mut result_groups: Vec<Group> = Vec::new();
+    let mut pending_singletons: Vec<StudentId> = Vec::new();
+    
+    for group in split_groups {
+        if group.members.len() == 1 {
+            // Collect singleton member
+            pending_singletons.extend(group.members);
+            
+            // If we have 2 singletons, create a 2-person group
+            if pending_singletons.len() == 2 {
+                let mut new_group = Group::new();
+                new_group.members = pending_singletons.drain(..).collect();
+                result_groups.push(new_group);
+            } else if pending_singletons.len() == 3 {
+                // If we have 3 singletons, create a 3-person group
+                let mut new_group = Group::new();
+                new_group.members = pending_singletons.drain(..).collect();
+                result_groups.push(new_group);
+            }
+        } else {
+            // Try to add pending singletons to previous group first
+            if !pending_singletons.is_empty() {
+                if let Some(last_group) = result_groups.last_mut() {
+                    while !pending_singletons.is_empty() && last_group.members.len() < 3 {
+                        last_group.members.push(pending_singletons.remove(0));
+                    }
+                }
+                
+                // Create groups from remaining singletons
+                while pending_singletons.len() >= 2 {
+                    let mut new_group = Group::new();
+                    let take_count = if pending_singletons.len() == 4 { 2 } else { std::cmp::min(3, pending_singletons.len()) };
+                    for _ in 0..take_count {
+                        new_group.members.push(pending_singletons.remove(0));
+                    }
+                    result_groups.push(new_group);
+                }
+            }
+            
+            // Add current group, possibly merging remaining singleton
+            if pending_singletons.len() == 1 && group.members.len() < 3 {
+                let mut merged_group = group;
+                merged_group.members.insert(0, pending_singletons.remove(0));
+                result_groups.push(merged_group);
+            } else {
+                result_groups.push(group);
+            }
+        }
+    }
+    
+    // Handle remaining singletons at the end
+    if !pending_singletons.is_empty() {
+        // Try to merge with the last group if it has space
+        if let Some(last_group) = result_groups.last_mut() {
+            while !pending_singletons.is_empty() && last_group.members.len() < 3 {
+                last_group.members.push(pending_singletons.remove(0));
+            }
+        }
+        
+        // Create groups from remaining singletons
+        while pending_singletons.len() >= 2 {
+            let mut new_group = Group::new();
+            let take_count = if pending_singletons.len() == 4 { 2 } else { std::cmp::min(3, pending_singletons.len()) };
+            for _ in 0..take_count {
+                new_group.members.push(pending_singletons.remove(0));
+            }
+            result_groups.push(new_group);
+        }
+        
+        // If there's still a single person left, we need to add them somewhere
+        if pending_singletons.len() == 1 {
+            if let Some(last_group) = result_groups.last_mut() {
+                // Add to last group even if it exceeds 3 (we'll need to split)
+                last_group.members.push(pending_singletons.remove(0));
+            } else {
+                // No groups at all - this is an edge case (only 1 person total)
+                let mut new_group = Group::new();
+                new_group.members = pending_singletons;
+                result_groups.push(new_group);
+            }
+        }
+    }
+    
+    // Final pass: ensure no groups exceed 3 members
+    let mut final_groups: Vec<Group> = Vec::new();
+    for group in result_groups {
+        if group.members.len() <= 3 {
+            final_groups.push(group);
+        } else {
+            let small_groups = split_into_small_groups(group.members);
+            final_groups.extend(small_groups);
+        }
+    }
+    
+    final_groups
 }
 
 fn reorganize_incomplete_groups(groups: Vec<Group>) -> Vec<Group> {
@@ -765,7 +837,7 @@ mod tests {
 
     #[test]
     fn test_reorganize_batch_groups_multiple_singletons() {
-        // Test multiple singletons are merged sequentially, then split if > 3
+        // Test multiple singletons are grouped together, preserving existing 2-person group
         let mut group1 = Group::new();
         group1.members = vec!["A".to_string(), "B".to_string()];
 
@@ -778,10 +850,14 @@ mod tests {
         let groups = vec![group1, group2, group3];
         let result = reorganize_batch_groups(groups);
 
-        // Both singletons merged (4 total) -> split into 2+2
+        // Original 2-person group [A, B] should be preserved, singletons [C, D] form new group
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].members.len(), 2);
+        assert!(result[0].members.contains(&"A".to_string()));
+        assert!(result[0].members.contains(&"B".to_string()));
         assert_eq!(result[1].members.len(), 2);
+        assert!(result[1].members.contains(&"C".to_string()));
+        assert!(result[1].members.contains(&"D".to_string()));
     }
 
     #[test]
