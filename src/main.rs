@@ -257,6 +257,15 @@ fn split_into_small_groups(members: Vec<StudentId>) -> Vec<Group> {
         return result;
     }
     
+    // Edge case: single member should not create a singleton
+    // This shouldn't happen in normal use since we only split groups > 3
+    if n == 1 {
+        let mut group = Group::new();
+        group.members.push(members[0].clone());
+        result.push(group);
+        return result;
+    }
+    
     let mut idx = 0;
     while idx < n {
         let remaining = n - idx;
@@ -269,17 +278,15 @@ fn split_into_small_groups(members: Vec<StudentId>) -> Vec<Group> {
                 3
             }
         } else {
-            // 1 or 2 remaining
+            // 2 remaining (1 is not possible when n >= 2 due to the algorithm)
             remaining
         };
         
         let mut new_group = Group::new();
-        for _ in 0..group_size {
-            if idx < n {
-                new_group.members.push(members[idx].clone());
-                idx += 1;
-            }
+        for i in 0..group_size {
+            new_group.members.push(members[idx + i].clone());
         }
+        idx += group_size;
         result.push(new_group);
     }
     
